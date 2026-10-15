@@ -1,0 +1,669 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>MILKY WAY</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+<style>
+/* Layout: gabinete de arcade mobile-first — canvas 16:9 em cima, controles de toque grandes embaixo (D-pad à esquerda, ações à direita). */
+:root{
+  --bg:#0b0a14; --fg:#f2f0ff; --panel:#17152a; --ink:#0b0a14; --line:#2a2744;
+  --milk:#fff8ec; --red:#e8322e; --yellow:#ffd23c; --cyan:#48d0ff; --green:#4ad46c;
+  --font-display:"Press Start 2P", "Courier New", monospace;
+  color-scheme:dark;
+}
+html,body{height:100%;overscroll-behavior:none}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-display);
+  padding-block:6px;padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(10px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;align-items:center;gap:8px;box-sizing:border-box;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+#game{width:100%;max-width:min(100%,calc((100vh - 130px) * 16 / 9));aspect-ratio:16/9;background:#000;flex:none;
+  border:3px solid var(--line);image-rendering:pixelated}
+#game canvas{width:100%!important;height:100%!important;display:block;image-rendering:pixelated}
+#touch{display:grid;grid-template-columns:1fr 1fr 1.4fr 1.4fr 1.3fr;gap:8px;width:100%;max-width:min(100%,calc((100vh - 130px) * 16 / 9))}
+#touch button{min-height:64px;font:inherit;font-size:9px;line-height:1.4;letter-spacing:.5px;padding:8px 4px;border:3px solid var(--line);border-radius:0;
+  background:var(--panel);color:var(--fg);cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#touch button small{display:block;font-size:7px;opacity:.6;margin-top:4px}
+#touch button.on{background:var(--yellow);color:var(--ink)}
+#touch button:focus-visible{outline:3px solid var(--cyan)}
+#touch .mv{font-size:20px}
+#touch .run{border-color:#7a1c1a}
+#touch .run.on{background:var(--red);color:var(--milk)}
+#touch .pos.active{background:var(--cyan);color:var(--ink);border-color:var(--cyan)}
+#hint{font-size:7px;line-height:1.8;opacity:.55;text-align:center}
+@media (max-width:600px){#hint{display:none}#touch button{min-height:60px;font-size:8px}}
+#rotate{display:none;font-size:8px;color:var(--yellow);letter-spacing:1px}
+@media (orientation:portrait) and (max-width:600px){#rotate{display:block}}
+@media (prefers-reduced-motion: reduce){#game{box-shadow:none}}
+</style>
+
+<div id="rotate">VIRE O CELULAR: MELHOR NA HORIZONTAL</div>
+<div id="game"></div>
+<div id="touch">
+  <button id="btnLeft" class="mv" aria-label="Andar para a esquerda">&lt;</button>
+  <button id="btnRight" class="mv" aria-label="Andar para a direita">&gt;</button>
+  <button id="btnPos1" class="pos" aria-label="Posição 1: Mamada">POSIÇÃO 1<small>MAMADA · 10s · 1.000</small></button>
+  <button id="btnPos2" class="pos" aria-label="Posição 2: Rapidinha">POSIÇÃO 2<small>RAPIDINHA · 15s · 2.000</small></button>
+  <button id="btnRun" class="run" aria-label="Correr">CORRE!<small>SAI DA POSIÇÃO</small></button>
+</div>
+<div id="hint">SETAS anda · SHIFT corre · 1 / 2 entra ou sai da posição · Q sai · ESPAÇO pula · P pausa · ESC mapa</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.80.1/phaser.min.js"></script>
+<script>
+/* ============================================================
+   MILKY WAY — "qualquer lugar é lugar"
+   Os meninos andam pelo cenário, escolhem onde parar, entram na
+   posição (o leite começa a encher), e saem para a posição neutra
+   quando o perigo chega. Em neutro ninguém é pego.
+   Config de fases é dado, não código.
+   ============================================================ */
+const W = 960, H = 540;
+
+const POSITIONS = {
+  mamada:    { num: 1, label: 'MAMADA',    seconds: 10, points: 1000 },
+  rapidinha: { num: 2, label: 'RAPIDINHA', seconds: 15, points: 2000 },
+};
+const OBSTACLES = ['manifestacao', 'policia', 'drone', 'patriota'];
+const TUNING = {
+  reactionWindow: 1.3,   // segundos entre o "CORRE!" e a derrota
+  firstObstacle: [3.0, 7.0],
+  nextObstacle:  [4.0, 9.0],
+  walkSpeed: 150, runSpeed: 330,
+  lives: 4,
+};
+
+// Cada local: fundo explorável, linha do chão, e por posição o sprite da pose.
+// `bg` numa posição = corte de câmera próprio (MASP posição 2 é a parede vermelha em close).
+// rect = [x, y, w, h] do sprite nativo na ref; nas poses sem corte próprio só a altura importa.
+const LOCATIONS = [
+ {id:'masp',     name:'MASP',           sub:'AV. PAULISTA',  bg:'masp_p1_bg', ground:489, hudH:64, positions:[
+   {id:'mamada',    chars:'masp_p1_chars', rect:[451,327,110,162], native:true},
+   {id:'rapidinha', chars:'masp_p2_chars', rect:[533,183,184,316], native:true, bg:'masp_p2_bg', fixed:true}]},
+ {id:'ponte',    name:'PONTE ESTAIADA', sub:'SÃO PAULO',     bg:'ponte_bg', ground:543, hudH:88, positions:[
+   {id:'mamada',    chars:'ponte_perdao_chars', rect:[395,218,220,325], native:true},
+   {id:'rapidinha', chars:'ponte_abraco_chars', rect:[408,218,194,325], native:false}]},
+ {id:'beco',     name:'BECO DO BATMAN', sub:'VILA MADALENA', bg:'beco_bg', ground:538, hudH:88, positions:[
+   {id:'mamada',    chars:'beco_perdao_chars', rect:[586,170,249,368], native:false},
+   {id:'rapidinha', chars:'beco_abraco_chars', rect:[622,170,178,368], native:true}]},
+ {id:'minhocao', name:'MINHOCÃO',       sub:'CENTRO',        bg:'minhocao_bg', ground:520, hudH:88, positions:[
+   {id:'mamada',    chars:'minhocao_perdao_chars', rect:[573,160,244,360], native:false},
+   {id:'rapidinha', chars:'minhocao_abraco_chars', rect:[588,160,215,360], native:true}]},
+ {id:'ibira',    name:'IBIRAPUERA',     sub:'SÃO PAULO',     bg:'ibira_bg', ground:550, hudH:88, positions:[
+   {id:'mamada',    chars:'ibira_perdao_chars', rect:[210,182,222,368], native:true},
+   {id:'rapidinha', chars:'ibira_abraco_chars', rect:[211,182,220,368], native:false}]},
+];
+
+// ---------- estado global ----------
+const G = { score: 0, lives: TUNING.lives, loc: 0, unlocked: 1, explosions: {}, muted: false };
+try { const s = JSON.parse(localStorage.getItem('milkyway') || '{}'); if (s.unlocked) G.unlocked = s.unlocked; if (s.best) G.best = s.best; } catch (e) {}
+function persist() { try { localStorage.setItem('milkyway', JSON.stringify({ unlocked: G.unlocked, best: Math.max(G.best || 0, G.score) })); } catch (e) {} }
+const TOUCH = { dir: 0, run: false };   // estado dos botões de toque, lido pela cena
+
+// ---------- áudio sintetizado (8-bit) ----------
+const SFX = (() => {
+  let ctx = null, hum = null, humGain = null;
+  const ac = () => { if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (ctx && ctx.state === 'suspended') ctx.resume(); return ctx; };
+  const tone = (type, f0, f1, dur, vol = 0.18, t0 = 0) => {
+    const c = ac(); if (!c || G.muted) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, c.currentTime + t0); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), c.currentTime + t0 + dur);
+    g.gain.setValueAtTime(vol, c.currentTime + t0); g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + t0 + dur);
+    o.connect(g).connect(c.destination); o.start(c.currentTime + t0); o.stop(c.currentTime + t0 + dur + 0.02);
+  };
+  const noise = (dur, vol = 0.3, t0 = 0, lp = 1200) => {
+    const c = ac(); if (!c || G.muted) return;
+    const n = c.sampleRate * dur, b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = c.createBufferSource(), g = c.createGain(), f = c.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = lp; s.buffer = b; g.gain.value = vol;
+    s.connect(f).connect(g).connect(c.destination); s.start(c.currentTime + t0);
+  };
+  return {
+    unlock: ac,
+    corre() { tone('square', 520, 380, 0.12, 0.2); tone('square', 300, 180, 0.22, 0.2, 0.14); noise(0.08, 0.15, 0.14, 2500); },
+    siren() { for (let i = 0; i < 6; i++) tone('square', i % 2 ? 620 : 880, i % 2 ? 620 : 880, 0.25, 0.08, i * 0.25); },
+    alarm() { for (let i = 0; i < 5; i++) tone('square', 1400, 1400, 0.07, 0.1, i * 0.15); },
+    stomp() { for (let i = 0; i < 6; i++) noise(0.08, 0.12, i * 0.22, 400); },
+    boom() { noise(0.9, 0.5, 0, 900); tone('sawtooth', 120, 30, 0.8, 0.3); },
+    hit() { noise(0.08, 0.25, 0, 3000); tone('square', 220, 90, 0.12, 0.2); },
+    select() { tone('square', 660, 660, 0.05, 0.12); tone('square', 990, 990, 0.08, 0.12, 0.05); },
+    nav() { tone('square', 440, 440, 0.04, 0.08); },
+    step() { tone('square', 180, 120, 0.03, 0.05); },
+    lose() { tone('square', 330, 110, 0.5, 0.15); tone('square', 165, 55, 0.5, 0.15, 0.25); },
+    milky() { [523, 659, 784, 1047, 1319].forEach((f, i) => tone('square', f, f, 0.18, 0.14, i * 0.07)); noise(0.6, 0.3, 0.3, 4000); },
+    humStart() { const c = ac(); if (!c || hum) return; hum = c.createOscillator(); humGain = c.createGain(); hum.type = 'sawtooth'; hum.frequency.value = 40; humGain.gain.value = 0; hum.connect(humGain).connect(c.destination); hum.start(); },
+    humSet(p, on) { if (!hum) return; humGain.gain.setTargetAtTime(on && !G.muted ? 0.04 + p * 0.06 : 0, ctx.currentTime, 0.05); hum.frequency.setTargetAtTime(40 + p * 120, ctx.currentTime, 0.05); },
+  };
+})();
+
+// ---------- utilitários de desenho pixelado ----------
+const FONT = { fontFamily: '"Press Start 2P", monospace', color: '#f2f0ff', resolution: 2 };
+function txt(scene, x, y, s, size = 12, opts = {}) {
+  const t = scene.add.text(x, y, s, { ...FONT, fontSize: size + 'px', ...opts });
+  if (opts.stroke === undefined) t.setStroke('#0b0a14', Math.max(3, size / 3));
+  return t;
+}
+function panel(scene, x, y, w, h, fill = 0x17152a, alpha = 0.92) {
+  const g = scene.add.graphics();
+  g.fillStyle(0x0b0a14, alpha).fillRect(x - 4, y - 4, w + 8, h + 8);
+  g.fillStyle(fill, alpha).fillRect(x, y, w, h);
+  g.lineStyle(3, 0xf2f0ff, 1).strokeRect(x + 3, y + 3, w - 6, h - 6);
+  return g;
+}
+function heart(g, x, y, s, on) {
+  const rows = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
+  g.fillStyle(on ? 0xe8322e : 0x3a3650, 1);
+  rows.forEach((r, j) => [...r].forEach((c, i) => { if (c === '1') g.fillRect(x + i * s, y + j * s, s, s); }));
+}
+const CAPTURE = ['SPACE', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SHIFT'];
+
+// ============================================================
+// BOOT
+// ============================================================
+class Boot extends Phaser.Scene {
+  constructor() { super('boot'); }
+  preload() {
+    const ids = new Set(); LOCATIONS.forEach(l => { ids.add(l.bg); l.positions.forEach(p => { ids.add(p.chars); if (p.bg) ids.add(p.bg); }); });
+    ids.forEach(id => this.load.image(id, 'assets/' + id + '.png'));
+    ['tom_face', 'pete_face'].forEach(id => this.load.image(id, 'assets/' + id + '.png'));
+    const sp = ['tom_front', 'pete_front', 'hi5', 'hug'];
+    for (let i = 0; i < 7; i++) sp.push('tom_walkR_' + i, 'pete_walkR_' + i, 'tom_walkL_' + i, 'pete_walkL_' + i);
+    for (let i = 0; i < 3; i++) sp.push('tom_dance_' + i, 'pete_dance_' + i);
+    sp.forEach(id => this.load.image(id, 'assets/sp/' + id + '.png'));
+    const bar = this.add.graphics(); this.load.on('progress', v => { bar.clear().fillStyle(0xfff8ec).fillRect(280, 262, 400 * v, 16); });
+  }
+  create() { (document.fonts ? document.fonts.load('12px "Press Start 2P"') : Promise.resolve()).then(() => this.scene.start('title')); }
+}
+
+// ============================================================
+// TÍTULO
+// ============================================================
+class Title extends Phaser.Scene {
+  constructor() { super('title'); }
+  create() {
+    this.input.keyboard.addCapture(CAPTURE);
+    this.add.image(0, 0, 'masp_p1_bg').setOrigin(0).setAlpha(0.45);
+    this.add.graphics().fillStyle(0x0b0a14, 0.55).fillRect(0, 0, W, H);
+    this.drops = this.add.group();
+    for (let i = 0; i < 28; i++) { const r = this.add.rectangle(Phaser.Math.Between(0, W), Phaser.Math.Between(0, H), 6, 10, 0xfff8ec).setAlpha(0.7); r.vy = Phaser.Math.Between(40, 120); this.drops.add(r); }
+    txt(this, W / 2, 150, 'MILKY WAY', 56, { color: '#fff8ec' }).setOrigin(0.5).setStroke('#e8322e', 12);
+    txt(this, W / 2, 215, 'QUALQUER LUGAR É LUGAR', 14, { color: '#ffd23c' }).setOrigin(0.5);
+    txt(this, W / 2, 300, 'SÃO PAULO · 16 BITS', 10, { color: '#48d0ff' }).setOrigin(0.5);
+    this.press = txt(this, W / 2, 400, 'TOQUE OU APERTE E PARA COMEÇAR', 12).setOrigin(0.5);
+    txt(this, W / 2, 470, 'ANDE · ESCOLHA O LUGAR · ENTRE NA POSIÇÃO · SAIA ANTES DE SER PEGO', 7, { color: '#a9a4c9' }).setOrigin(0.5);
+    if (G.best) txt(this, W / 2, 505, 'RECORDE ' + G.best.toLocaleString('pt-BR'), 9, { color: '#ffd23c' }).setOrigin(0.5);
+    this.go = () => { SFX.unlock(); SFX.humStart(); SFX.select(); this.scene.start('map'); };
+    ['keydown-E', 'keydown-ENTER', 'keydown-SPACE'].forEach(k => this.input.keyboard.on(k, this.go));
+    this.input.on('pointerdown', this.go);
+  }
+  update(t, dt) {
+    this.press.setAlpha(0.55 + 0.45 * Math.sin(t / 220));
+    this.drops.children.iterate(r => { r.y += r.vy * dt / 1000; if (r.y > H) { r.y = -10; r.x = Phaser.Math.Between(0, W); } });
+  }
+}
+
+// ============================================================
+// MAPA DE FASES (um local por fase)
+// ============================================================
+class MapScene extends Phaser.Scene {
+  constructor() { super('map'); }
+  create() {
+    this.input.keyboard.addCapture(CAPTURE);
+    this.sel = Math.min(G.loc, G.unlocked - 1);
+    this.bgImg = this.add.image(0, 0, LOCATIONS[this.sel].bg).setOrigin(0).setAlpha(0.5);
+    panel(this, 60, 40, 840, 460);
+    txt(this, W / 2, 70, 'ESCOLHA A FASE', 20, { color: '#ffd23c' }).setOrigin(0.5);
+    this.rows = LOCATIONS.map((l, i) => {
+      const y = 120 + i * 62, locked = i >= G.unlocked;
+      const bgRow = this.add.rectangle(480, y + 18, 760, 52, 0x2a2744).setAlpha(0);
+      txt(this, 110, y, 'FASE ' + (i + 1), 12, { color: locked ? '#5a5675' : '#48d0ff' });
+      txt(this, 240, y, locked ? '? ? ? ? ?' : l.name, 14, { color: locked ? '#5a5675' : '#f2f0ff' });
+      txt(this, 240, y + 22, locked ? 'COMPLETE A FASE ANTERIOR' : l.sub, 8, { color: '#a9a4c9' });
+      txt(this, 820, y + 8, locked ? '' : (G.explosions[l.id] || 0) + 'x MILKY', 9, { color: '#fff8ec' }).setOrigin(1, 0);
+      bgRow.setInteractive({ useHandCursor: !locked }).on('pointerdown', () => { if (!locked) { this.sel = i; this.confirm(); } });
+      return bgRow;
+    });
+    txt(this, W / 2, 462, 'TOQUE NA FASE · ' + G.score.toLocaleString('pt-BR') + ' PTS', 9, { color: '#a9a4c9' }).setOrigin(0.5);
+    const k = this.input.keyboard;
+    k.on('keydown-UP', () => this.move(-1)); k.on('keydown-DOWN', () => this.move(1));
+    k.on('keydown-LEFT', () => this.move(-1)); k.on('keydown-RIGHT', () => this.move(1));
+    k.on('keydown-E', () => this.confirm()); k.on('keydown-ENTER', () => this.confirm());
+    this.refresh();
+  }
+  move(d) { const n = Phaser.Math.Clamp(this.sel + d, 0, G.unlocked - 1); if (n !== this.sel) { this.sel = n; SFX.nav(); this.refresh(); } }
+  refresh() { this.rows.forEach((r, i) => r.setAlpha(i === this.sel ? 0.9 : 0)); this.bgImg.setTexture(LOCATIONS[this.sel].bg); }
+  confirm() { SFX.select(); G.loc = this.sel; this.scene.start('play'); }
+}
+
+// ============================================================
+// JOGO
+// ============================================================
+class Play extends Phaser.Scene {
+  constructor() { super('play'); }
+  create() {
+    this.loc = LOCATIONS[G.loc];
+    this.milk = { mamada: 0, rapidinha: 0 }; this.pose = null; this.paused = false; this.threat = null;
+    this.x = W / 2; this.facing = 1; this.walkT = 0;
+    this.bg = this.add.image(0, 0, this.loc.bg).setOrigin(0);
+    this.world = this.add.container(0, 0);
+    this.fx = this.add.container(0, 0);
+    // posição neutra: os dois lado a lado (sprite provisório: mesmo sprite em pé, um espelhado)
+    this.tom = this.add.image(-30, 0, 'tom_front').setOrigin(0.5, 1);
+    this.pete = this.add.image(30, 0, 'pete_front').setOrigin(0.5, 1);
+    this.frame = 0; this.frameT = 0;
+    this.pair = this.add.container(this.x, this.loc.ground, [this.tom, this.pete]);
+    this.chars = this.add.image(0, 0, this.loc.positions[0].chars).setOrigin(0.5, 1).setVisible(false);
+    this.charsLayer = this.add.container(0, 0, [this.chars]);
+    this.buildHUD();
+    this.ui = this.add.container(0, 0);
+    const k = this.input.keyboard; k.addCapture(CAPTURE);
+    this.keys = k.addKeys({ left: 'LEFT', right: 'RIGHT', shift: 'SHIFT', a: 'A', d: 'D' });
+    k.on('keydown-ONE', () => this.togglePose('mamada')); k.on('keydown-E', () => this.togglePose('mamada'));
+    k.on('keydown-TWO', () => this.togglePose('rapidinha')); k.on('keydown-R', () => this.togglePose('rapidinha'));
+    k.on('keydown-Q', () => this.exitPose()); k.on('keydown-SHIFT', () => this.exitPose());
+    k.on('keydown-SPACE', () => this.jump());
+    k.on('keydown-P', () => this.togglePause());
+    k.on('keydown-ESC', () => { if (['neutral', 'pose', 'threat'].includes(this.state)) this.scene.start('map'); });
+    this.bindTouch();
+    this.showIntro();
+  }
+  bindTouch() {
+    const self = () => game.scene.getScene('play');
+    const hold = (id, on, off) => { const b = document.getElementById(id); if (!b || b._bound) return; b._bound = true;
+      b.addEventListener('pointerdown', e => { e.preventDefault(); b.setPointerCapture && b.setPointerCapture(e.pointerId); b.classList.add('on'); on(); });
+      ['pointerup', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => { b.classList.remove('on'); off && off(); })); };
+    hold('btnLeft', () => { TOUCH.dir = -1; }, () => { TOUCH.dir = 0; });
+    hold('btnRight', () => { TOUCH.dir = 1; }, () => { TOUCH.dir = 0; });
+    hold('btnRun', () => { TOUCH.run = true; const s = self(); if (s && s.scene.isActive()) s.exitPose(); }, () => { TOUCH.run = false; });
+    hold('btnPos1', () => { const s = self(); if (s && s.scene.isActive()) s.togglePose('mamada'); });
+    hold('btnPos2', () => { const s = self(); if (s && s.scene.isActive()) s.togglePose('rapidinha'); });
+  }
+  setTouchActive() { ['btnPos1', 'btnPos2'].forEach((id, i) => { const b = document.getElementById(id); if (b) b.classList.toggle('active', !!this.pose && this.pose.id === ['mamada', 'rapidinha'][i]); }); }
+
+  // ---------- HUD ----------
+  buildHUD() {
+    this.hud = this.add.container(0, 0);
+    const g = this.add.graphics();
+    g.fillStyle(0x0b0a14, 1).fillRect(0, 0, W, this.loc.hudH || 64).fillRect(0, H - 28, W, 28);
+    this.hud.add(g);
+    this.hud.add(this.add.image(24, 14, 'tom_face').setOrigin(0).setScale(1.1));
+    this.hud.add(this.add.image(240, 14, 'pete_face').setOrigin(0).setScale(1.1));
+    this.hud.add(txt(this, 66, 14, 'TOM', 10)); this.hud.add(txt(this, 282, 14, 'PETE', 10));
+    this.hearts = this.add.graphics(); this.hud.add(this.hearts);
+    this.hud.add(txt(this, W - 24, 12, this.loc.name, 12, { color: '#fff8ec' }).setOrigin(1, 0));
+    this.hud.add(txt(this, W - 24, 32, this.loc.sub, 8, { color: '#48d0ff' }).setOrigin(1, 0));
+    this.scoreTxt = txt(this, W / 2, 14, '', 12, { color: '#ffd23c' }).setOrigin(0.5, 0); this.hud.add(this.scoreTxt);
+    this.posTxt = txt(this, W / 2, 36, '', 8, { color: '#a9a4c9' }).setOrigin(0.5, 0); this.hud.add(this.posTxt);
+    this.glass = this.add.graphics(); this.hud.add(this.glass);
+    this.milkTxt = txt(this, 0, 0, '', 9, { color: '#fff8ec' }); this.hud.add(this.milkTxt);
+    this.glassLbl = txt(this, 0, 0, 'LEITE', 7, { color: '#a9a4c9' }); this.hud.add(this.glassLbl);
+    this.hintTxt = txt(this, 24, H - 22, '', 9, { color: '#a9a4c9' }); this.hud.add(this.hintTxt);
+    this.refreshHUD();
+  }
+  refreshHUD() {
+    this.scoreTxt.setText(G.score.toLocaleString('pt-BR') + ' PTS');
+    this.hearts.clear();
+    for (let i = 0; i < TUNING.lives; i++) { heart(this.hearts, 66 + i * 20, 34, 2, i < G.lives); heart(this.hearts, 282 + i * 20, 34, 2, i < G.lives); }
+    this.drawGlass();
+  }
+  activeMilk() { return this.pose ? this.milk[this.pose.id] : Math.max(this.milk.mamada, this.milk.rapidinha); }
+  drawGlass() {
+    const g = this.glass, x = W - 48, y = H - 150, w = 30, h = 110, m = this.activeMilk(); g.clear();
+    g.fillStyle(0x0b0a14, 0.8).fillRect(x - 8, y - 22, w + 16, h + 50);
+    g.lineStyle(3, 0xf2f0ff).strokeRect(x, y, w, h);
+    const f = Math.round((h - 6) * m / 100);
+    g.fillStyle(0xfff8ec).fillRect(x + 3, y + h - 3 - f, w - 6, f);
+    if (f > 4) g.fillStyle(0xffffff).fillRect(x + 6, y + h - 3 - f, 4, Math.max(0, f - 6));
+    this.glassLbl.setPosition(x + w / 2, y - 16).setOrigin(0.5, 0);
+    this.milkTxt.setText(Math.floor(m) + '%').setPosition(x + w / 2, y + h + 10).setOrigin(0.5, 0);
+  }
+
+  // ---------- INTRO DA FASE ----------
+  showIntro() {
+    this.state = 'intro'; this.ui.removeAll(true);
+    const items = this.loc.positions.map(p => ({ p, c: POSITIONS[p.id] }));
+    this.ui.add(panel(this, 140, 100, 680, 330));
+    this.ui.add(txt(this, W / 2, 124, this.loc.name, 20, { color: '#ffd23c' }).setOrigin(0.5, 0));
+    this.ui.add(txt(this, W / 2, 152, 'ANDE PELO CENÁRIO, ESCOLHA O LUGAR E ENTRE NA POSIÇÃO', 7, { color: '#a9a4c9' }).setOrigin(0.5, 0));
+    this.ui.add(txt(this, 180, 190, 'POSIÇÃO', 8, { color: '#a9a4c9' })); this.ui.add(txt(this, 600, 190, 'TEMPO', 8, { color: '#a9a4c9' })); this.ui.add(txt(this, 790, 190, 'PONTOS', 8, { color: '#a9a4c9' }).setOrigin(1, 0));
+    items.forEach((it, i) => {
+      const y = 215 + i * 60;
+      this.ui.add(txt(this, 180, y, it.c.num + ' — ' + it.c.label, 12));
+      this.ui.add(txt(this, 600, y, it.c.seconds + ' SEG', 11, { color: '#48d0ff' }));
+      this.ui.add(txt(this, 790, y, it.c.points.toLocaleString('pt-BR') + ' PTS', 11, { color: '#ffd23c' }).setOrigin(1, 0));
+      if (!it.p.native) this.ui.add(txt(this, 180, y + 22, 'SPRITE PROVISÓRIO (AGUARDANDO REF)', 7, { color: '#e8322e' }));
+    });
+    this.ui.add(txt(this, W / 2, 345, 'QUANDO OUVIR "CORRE!", SAIA DA POSIÇÃO: EM NEUTRO NINGUÉM É PEGO', 7, { color: '#fff8ec' }).setOrigin(0.5, 0));
+    this.ui.add(txt(this, W / 2, 395, 'TOQUE PARA COMEÇAR', 11, { color: '#4ad46c' }).setOrigin(0.5, 0));
+    const start = () => { if (this.state !== 'intro') return; SFX.select(); this.ui.removeAll(true); this.toNeutral(true); this.scheduleObstacle(TUNING.firstObstacle); };
+    this.input.once('pointerdown', start); this.input.keyboard.once('keydown-E', start); this.input.keyboard.once('keydown-ENTER', start); this.input.keyboard.once('keydown-SPACE', start);
+  }
+
+  // ---------- NEUTRO / POSE ----------
+  toNeutral(first) {
+    this.state = 'neutral'; this.pose = null; SFX.humSet(0, false);
+    if (this.bg.texture.key !== this.loc.bg) this.bg.setTexture(this.loc.bg);
+    this.chars.setVisible(false); this.pair.setVisible(true).setPosition(this.x, this.loc.ground);
+    this.posTxt.setText('NEUTRO · 1: MAMADA 10S 1.000 · 2: RAPIDINHA 15S 2.000');
+    this.hintTxt.setText(first ? 'ANDE COM < > · ESCOLHA O LUGAR · APERTE 1 OU 2' : 'NEUTRO: SEGUROS. ANDE E ESCOLHA OUTRO LUGAR OU VOLTE À POSIÇÃO');
+    this.setTouchActive(); this.drawGlass();
+  }
+  togglePose(id) {
+    if (this.pose && this.pose.id === id) { this.exitPose(); return; }
+    if (!['neutral', 'pose', 'threat'].includes(this.state)) return;
+    if (this.state === 'threat') { this.exitPose(); return; }   // com perigo na porta, qualquer botão de posição = sair
+    const p = this.loc.positions.find(q => q.id === id); if (!p) return;
+    this.pose = p; this.posCfg = POSITIONS[id]; this.state = 'pose'; SFX.select();
+    if (p.bg) { this.bg.setTexture(p.bg); this.home = { x: p.rect[0] + p.rect[2] / 2, y: p.rect[1] + p.rect[3] }; }
+    else this.home = { x: this.x, y: this.loc.ground };
+    this.pair.setVisible(false);
+    this.chars.setTexture(p.chars).setPosition(this.home.x, this.home.y).setVisible(true).setAngle(0).setScale(1).setAlpha(1).setFlipX(this.facing < 0 && !p.bg);
+    this.charsLayer.setPosition(0, 0);
+    this.posTxt.setText('POSIÇÃO ' + this.posCfg.num + ' · ' + this.posCfg.label + ' · ' + this.posCfg.seconds + 'S · ' + this.posCfg.points.toLocaleString('pt-BR') + ' PTS');
+    this.hintTxt.setText('TREMENDO... AO OUVIR "CORRE!", APERTE DE NOVO OU CORRA PARA SAIR');
+    this.setTouchActive(); this.drawGlass();
+    const label = txt(this, this.home.x, this.home.y - this.chars.displayHeight - 24, this.posCfg.label, 14, { color: '#fff8ec' }).setOrigin(0.5).setAlpha(0); this.fx.add(label);
+    this.tweens.add({ targets: label, alpha: 1, y: label.y - 14, duration: 250, yoyo: true, hold: 600, onComplete: () => label.destroy() });
+  }
+  exitPose() {
+    if (!['pose', 'threat'].includes(this.state)) return;
+    const wasThreat = this.state === 'threat';
+    if (this.pose && !this.pose.bg) this.x = this.home.x;
+    this.toNeutral(false);
+    if (wasThreat) { this.hintTxt.setText('SAÍRAM A TEMPO! EM NEUTRO O PERIGO PASSA'); const d = txt(this, this.x, this.loc.ground - 180, 'UFA!', 16, { color: '#4ad46c' }).setOrigin(0.5); this.fx.add(d); this.tweens.add({ targets: d, y: d.y - 30, alpha: 0, duration: 700, onComplete: () => d.destroy() }); }
+  }
+  jump() {
+    if (this.state !== 'neutral' || this.jumping) return; this.jumping = true;
+    this.tweens.add({ targets: this.pair, y: this.loc.ground - 46, duration: 190, yoyo: true, ease: 'Quad.easeOut', onComplete: () => { this.jumping = false; this.pair.y = this.loc.ground; } });
+  }
+  update(t, dt) {
+    if (this.paused) return;
+    const s = dt / 1000;
+    if (this.state === 'neutral') {
+      const dir = (this.keys.left.isDown || this.keys.a.isDown ? -1 : 0) + (this.keys.right.isDown || this.keys.d.isDown ? 1 : 0) + TOUCH.dir;
+      const run = this.keys.shift.isDown || TOUCH.run;
+      if (dir) {
+        this.facing = dir > 0 ? 1 : -1;
+        this.x = Phaser.Math.Clamp(this.x + dir * (run ? TUNING.runSpeed : TUNING.walkSpeed) * s, 50, W - 50);
+        this.frameT += s * (run ? 18 : 11);
+        const f = Math.floor(this.frameT) % 7, side = dir < 0 ? 'L' : 'R';
+        this.tom.setTexture('tom_walk' + side + '_' + f); this.pete.setTexture('pete_walk' + side + '_' + ((f + 3) % 7));
+        this.tom.x = dir < 0 ? -30 : 30; this.pete.x = dir < 0 ? 30 : -30;   // quem vai na frente lidera
+        if (Math.floor(this.frameT / 3.5) !== this.lastStep) { this.lastStep = Math.floor(this.frameT / 3.5); SFX.step(); if (run) this.dust(); }
+      } else { this.tom.setTexture('tom_front'); this.pete.setTexture('pete_front'); this.tom.x = -30; this.pete.x = 30; }
+      if (!this.jumping) this.pair.setPosition(this.x, this.loc.ground);
+    }
+    if (this.state === 'pose' || this.state === 'threat') {
+      const m = this.milk[this.pose.id];
+      if (this.state === 'pose') {
+        this.milk[this.pose.id] = Math.min(100, m + 100 / this.posCfg.seconds * s);
+        const amp = 1 + m / 100 * 5;
+        this.chars.setPosition(this.home.x + Phaser.Math.Between(-amp, amp), this.home.y + Phaser.Math.Between(-amp, amp) * 0.4);
+        if (m > 60 && Math.random() < 0.3) this.dropMilk();
+        this.drawGlass(); SFX.humSet(m / 100, true);
+        if (this.milk[this.pose.id] >= 100) this.milkyExplosion();
+      }
+    }
+    if (this.threat && this.threat.update) this.threat.update(s, t);
+  }
+  dust() { const d = this.add.rectangle(this.x - this.facing * 30, this.loc.ground - 4, 6, 6, 0xd8d0c0); this.fx.add(d); this.tweens.add({ targets: d, x: d.x - this.facing * 20, y: d.y - 10, alpha: 0, duration: 300, onComplete: () => d.destroy() }); }
+  dropMilk() {
+    const d = this.add.rectangle(this.chars.x + Phaser.Math.Between(-40, 40), this.chars.y - Phaser.Math.Between(40, 120), 5, 8, 0xfff8ec);
+    this.fx.add(d); this.tweens.add({ targets: d, y: d.y + 80, alpha: 0, duration: 500, onComplete: () => d.destroy() });
+  }
+  togglePause() {
+    if (!['neutral', 'pose', 'threat'].includes(this.state) && !this.paused) return;
+    this.paused = !this.paused;
+    if (this.paused) { this.tweens.pauseAll(); this.time.paused = true; SFX.humSet(0, false); this.pauseUI = this.add.container(0, 0, [panel(this, 330, 220, 300, 100), txt(this, W / 2, 262, 'PAUSA', 20, { color: '#ffd23c' }).setOrigin(0.5)]); }
+    else { this.tweens.resumeAll(); this.time.paused = false; this.pauseUI.destroy(); }
+  }
+
+  // ---------- OBSTÁCULOS: chegam a qualquer momento; só pegam quem está na posição ----------
+  scheduleObstacle(range) {
+    if (this.obsTimer) this.obsTimer.remove();
+    this.obsTimer = this.time.delayedCall(Phaser.Math.FloatBetween(range[0], range[1]) * 1000, () => this.spawnObstacle());
+  }
+  spawnObstacle() {
+    if (!['neutral', 'pose'].includes(this.state) || this.threat) { this.scheduleObstacle([1, 2]); return; }
+    const kind = Phaser.Utils.Array.GetRandom(OBSTACLES);
+    this.threat = this['ob_' + kind]();
+  }
+  targetX() { return this.pose ? this.home.x : this.x; }
+  inPose() { return this.state === 'pose' || this.state === 'threat'; }
+  // o obstáculo chegou perto: grita se estiverem na posição, senão só passa
+  arrive(onCaught, onPass) {
+    if (this.inPose()) { this.yell(); this.reactTimer = this.time.delayedCall(TUNING.reactionWindow * 1000, () => { if (this.inPose()) { this.caught(onCaught); } else onPass(); }); }
+    else { this.hintTxt.setText('PERIGO PASSANDO... EM NEUTRO ESTÁ TUDO BEM'); onPass(); }
+  }
+  yell() {
+    this.state = 'threat'; SFX.corre(); SFX.humSet(0, false);
+    this.chars.setPosition(this.home.x, this.home.y);
+    const flash = this.add.rectangle(W / 2, H / 2, W, H, 0xe8322e).setAlpha(0.35); this.fx.add(flash);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 600, onComplete: () => flash.destroy() });
+    const c = txt(this, this.chars.x, this.chars.y - this.chars.displayHeight - 30, 'CORRE!', 34, { color: '#fff8ec' }).setOrigin(0.5).setStroke('#e8322e', 10); this.fx.add(c);
+    this.tweens.add({ targets: c, scale: { from: 0.4, to: 1.2 }, duration: 160, yoyo: true, repeat: 3, onComplete: () => c.destroy() });
+    this.hintTxt.setText('CORRE! APERTE A POSIÇÃO OU CORRE PARA SAIR');
+  }
+  threatGone() { this.world.removeAll(true); this.threat = null; if (['neutral', 'pose'].includes(this.state)) { this.hintTxt.setText(this.inPose() ? 'TREMENDO...' : 'NEUTRO: ESCOLHA O LUGAR E A POSIÇÃO'); this.scheduleObstacle(TUNING.nextObstacle); } }
+  caught(anim) {
+    this.state = 'defeat'; SFX.humSet(0, false); SFX.lose(); this.hintTxt.setText('');
+    anim(() => this.afterDefeat());
+  }
+  afterDefeat() {
+    G.lives--; this.milk = { mamada: 0, rapidinha: 0 }; this.refreshHUD();
+    const over = G.lives <= 0;
+    const p = panel(this, 230, 180, 500, 170), t1 = txt(this, W / 2, 215, over ? 'GAME OVER' : 'FORAM PEGOS!', 20, { color: '#e8322e' }).setOrigin(0.5);
+    const t2 = txt(this, W / 2, 262, over ? 'PONTOS ZERADOS · VIDAS RESTAURADAS' : 'LEITE ZERADO · ' + G.lives + (G.lives === 1 ? ' VIDA' : ' VIDAS'), 9, { color: '#a9a4c9' }).setOrigin(0.5);
+    const t3 = txt(this, W / 2, 310, 'TOQUE PARA TENTAR DE NOVO', 11, { color: '#ffd23c' }).setOrigin(0.5);
+    this.ui.add([p, t1, t2, t3]);
+    if (over) { persist(); G.score = 0; G.lives = TUNING.lives; }
+    this.state = 'wait';
+    const again = () => { this.ui.removeAll(true); this.world.removeAll(true); this.fx.removeAll(true); this.threat = null; this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); };
+    this.input.keyboard.once('keydown-E', again); this.input.once('pointerdown', again);
+  }
+
+  // ---------- MILKY EXPLOSION ----------
+  milkyExplosion() {
+    this.state = 'explode'; this.time.removeAllEvents(); this.world.removeAll(true); this.threat = null; SFX.humSet(0, false); SFX.milky();
+    this.cameras.main.shake(700, 0.02);
+    const cx = this.chars.x, cy = this.chars.y - this.chars.displayHeight / 2;
+    const ring = this.add.circle(cx, cy, 10, 0xfff8ec).setAlpha(0.9); this.fx.add(ring);
+    this.tweens.add({ targets: ring, radius: 520, alpha: 0, duration: 900, ease: 'Quad.easeOut' });
+    for (let i = 0; i < 140; i++) {
+      const sz = Phaser.Math.Between(4, 14), d = this.add.rectangle(cx, cy, sz, sz, i % 7 ? 0xfff8ec : 0xffffff); this.fx.add(d);
+      const a = Math.random() * Math.PI * 2, sp = Phaser.Math.Between(150, 620);
+      this.tweens.add({ targets: d, x: cx + Math.cos(a) * sp, y: cy + Math.sin(a) * sp + 200, alpha: 0, duration: Phaser.Math.Between(700, 1300), ease: 'Quad.easeOut', onComplete: () => d.destroy() });
+    }
+    for (let i = 0; i < 6; i++) { const pz = this.add.ellipse(cx + Phaser.Math.Between(-220, 220), this.home.y + Phaser.Math.Between(-4, 10), Phaser.Math.Between(40, 120), 14, 0xfff8ec).setAlpha(0); this.fx.add(pz); this.tweens.add({ targets: pz, alpha: 0.95, delay: 300 + i * 80, duration: 300 }); }
+    const big = txt(this, W / 2, 230, 'MILKY EXPLOSION!', 40, { color: '#fff8ec' }).setOrigin(0.5).setStroke('#e8322e', 12).setScale(0.2); this.fx.add(big);
+    this.tweens.add({ targets: big, scale: 1, duration: 400, ease: 'Back.easeOut' });
+    const pts = txt(this, W / 2, 300, '+' + this.posCfg.points.toLocaleString('pt-BR') + ' PTS', 22, { color: '#ffd23c' }).setOrigin(0.5).setAlpha(0); this.fx.add(pts);
+    this.tweens.add({ targets: pts, alpha: 1, y: 290, delay: 400, duration: 300 });
+    G.score += this.posCfg.points; G.explosions[this.loc.id] = (G.explosions[this.loc.id] || 0) + 1;
+    const unlocked = G.loc + 1 < LOCATIONS.length && G.unlocked < G.loc + 2;
+    if (unlocked) { G.unlocked = G.loc + 2; this.time.delayedCall(1200, () => { const u = txt(this, W / 2, 350, 'FASE ' + (G.loc + 2) + ' LIBERADA: ' + LOCATIONS[G.loc + 1].name, 11, { color: '#4ad46c' }).setOrigin(0.5); this.fx.add(u); }); }
+    persist(); this.refreshHUD();
+    this.time.delayedCall(900, () => this.celebrate());
+    this.time.delayedCall(3600, () => {
+      this.fx.removeAll(true); this.milk[this.pose.id] = 0;
+      if (G.loc + 1 < LOCATIONS.length && (G.explosions[this.loc.id] || 0) >= 1) {
+        const p = panel(this, 200, 190, 560, 150), a = txt(this, W / 2, 225, 'CONTINUAR AQUI', 12, { color: '#f2f0ff' }).setOrigin(0.5), b = txt(this, W / 2, 285, 'PRÓXIMA FASE: ' + LOCATIONS[G.loc + 1].name, 12, { color: '#4ad46c' }).setOrigin(0.5);
+        const ra = this.add.rectangle(W / 2, 225, 540, 44, 0x2a2744).setAlpha(0.01).setInteractive(), rb = this.add.rectangle(W / 2, 285, 540, 44, 0x2a2744).setAlpha(0.01).setInteractive();
+        this.ui.add([p, ra, rb, a, b]); this.state = 'wait';
+        const stay = () => { this.ui.removeAll(true); this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); };
+        const next = () => { SFX.select(); G.loc++; this.scene.restart(); };
+        ra.on('pointerdown', stay); rb.on('pointerdown', next); this.input.keyboard.once('keydown-E', stay); this.input.keyboard.once('keydown-ENTER', next);
+      } else { this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); }
+    });
+  }
+
+  // comemoração: abraço, hi-5 ou dancinha, direto do sprite sheet
+  celebrate() {
+    const kind = Phaser.Utils.Array.GetRandom(['hug', 'hi5', 'dance']);
+    const gx = this.pose && this.pose.bg ? this.home.x : this.x, gy = this.groundY();
+    this.chars.setVisible(false);
+    if (kind === 'dance') {
+      const t = this.add.image(gx - 44, gy, 'tom_dance_0').setOrigin(0.5, 1), pt = this.add.image(gx + 44, gy, 'pete_dance_0').setOrigin(0.5, 1);
+      this.fx.add([t, pt]); let f = 0;
+      const ev = this.time.addEvent({ delay: 170, repeat: 14, callback: () => { f++; t.setTexture('tom_dance_' + (f % 3)); pt.setTexture('pete_dance_' + ((f + 1) % 3)); t.y = gy - (f % 2) * 10; pt.y = gy - ((f + 1) % 2) * 10; SFX.nav(); } });
+    } else {
+      const img = this.add.image(gx, gy, kind).setOrigin(0.5, 1).setScale(0.6).setAlpha(0); this.fx.add(img);
+      this.tweens.add({ targets: img, scale: 1, alpha: 1, duration: 250, ease: 'Back.easeOut' });
+      this.tweens.add({ targets: img, y: gy - 8, duration: 200, yoyo: true, repeat: 5, delay: 300 });
+      SFX.select();
+    }
+    for (let i = 0; i < 6; i++) { const h = txt(this, gx + Phaser.Math.Between(-90, 90), gy - 150, '♥', 16, { color: '#e8322e' }).setOrigin(0.5).setAlpha(0); this.fx.add(h); this.tweens.add({ targets: h, alpha: 1, y: gy - 260 - i * 15, duration: 1400, delay: i * 180, onComplete: () => h.destroy() }); }
+  }
+
+  // ---------- OBSTÁCULOS ----------
+  person(x, y, shirt, pants, flag) {
+    const c = this.add.container(x, y);
+    const parts = [this.add.rectangle(0, -34, 14, 14, 0xd9a877), this.add.rectangle(0, -20, 18, 18, shirt), this.add.rectangle(-4, -6, 7, 14, pants), this.add.rectangle(4, -6, 7, 14, pants), this.add.rectangle(0, -43, 14, 5, Phaser.Utils.Array.GetRandom([0x2a1a0e, 0x111111, 0xd8b26a, 0x6b3a1e]))];
+    if (flag) { parts.push(this.add.rectangle(10, -58, 3, 36, 0x7a5a30), this.add.rectangle(23, -66, 24, 16, flag)); }
+    c.add(parts); return c;
+  }
+  groundY() { return this.pose && this.pose.bg ? this.home.y : this.loc.ground; }
+
+  ob_manifestacao() {
+    const fromLeft = Math.random() < 0.5, dir = fromLeft ? 1 : -1;
+    const crowd = this.add.container(fromLeft ? -260 : W + 260, this.groundY() + 4); this.world.add(crowd);
+    const cols = [0xe8322e, 0xffd23c, 0x48d0ff, 0x4ad46c, 0xf2f0ff, 0x9b59d0, 0xff8c42];
+    const ppl = [];
+    for (let i = 0; i < 18; i++) { const p = this.person(Phaser.Math.Between(-120, 120), Phaser.Math.Between(-6, 6), Phaser.Utils.Array.GetRandom(cols), 0x2c2c3a, i % 3 === 0 ? Phaser.Utils.Array.GetRandom(cols) : null); p.ph = Math.random() * 6; crowd.add(p); ppl.push(p); }
+    for (let i = 0; i < 4; i++) { const s = this.add.rectangle(Phaser.Math.Between(-110, 110), -70, 46, 26, 0xfff8ec); const l = this.add.rectangle(s.x, -50, 3, 26, 0x7a5a30); crowd.add([l, s]); }
+    SFX.stomp();
+    const o = { phase: 'approach', speed: 95 };
+    o.update = (s, t) => {
+      ppl.forEach(p => { p.y = Math.sin(t / 110 + p.ph) * 4; });
+      if (o.phase === 'approach') { crowd.x += dir * o.speed * s; if (Math.abs(crowd.x - this.targetX()) < 330) { o.phase = 'wait'; this.arrive(o.defeat, () => { o.phase = 'passing'; o.speed = 300; }); } }
+      if (o.phase === 'passing') { crowd.x += dir * o.speed * s; if (dir > 0 ? crowd.x > W + 280 : crowd.x < -280) { o.phase = 'done'; this.threatGone(); } }
+      if (o.phase === 'wait') crowd.x += dir * 60 * s;
+    };
+    o.defeat = (done) => {
+      o.phase = 'grab';
+      this.tweens.add({ targets: crowd, x: this.home.x, duration: 500, onComplete: () => {
+        this.tweens.add({ targets: this.chars, y: this.home.y - 70, angle: dir * 88, duration: 500, ease: 'Quad.easeOut', onComplete: () => {
+          this.tweens.add({ targets: [crowd, this.chars], x: dir > 0 ? W + 400 : -400, duration: 2200, ease: 'Sine.easeIn', onUpdate: () => { this.chars.y = this.home.y - 70 + Math.sin(this.time.now / 90) * 8; this.chars.angle = dir * 88 + Math.sin(this.time.now / 130) * 10; }, onComplete: done });
+        }});
+      }});
+    };
+    return o;
+  }
+
+  ob_policia() {
+    const tx = this.targetX(), fromLeft = tx > W / 2, dir = fromLeft ? 1 : -1;
+    const car = this.add.container(fromLeft ? -200 : W + 200, this.groundY() + 2); this.world.add(car);
+    const body = this.add.rectangle(0, -22, 130, 34, 0xf2f0ff), top = this.add.rectangle(-8, -46, 70, 20, 0xf2f0ff), win = this.add.rectangle(-8, -46, 60, 12, 0x48d0ff);
+    const stripe = this.add.rectangle(0, -18, 130, 8, 0x1d3f8f), pm = txt(this, 0, -28, 'PM', 7, { color: '#1d3f8f', stroke: '#f2f0ff' }).setOrigin(0.5);
+    const w1 = this.add.rectangle(-42, -4, 22, 14, 0x111111), w2 = this.add.rectangle(42, -4, 22, 14, 0x111111);
+    const lr = this.add.rectangle(-22, -60, 18, 8, 0xe8322e), lb = this.add.rectangle(2, -60, 18, 8, 0x3a6cff);
+    car.add([w1, w2, body, stripe, top, win, pm, lr, lb]); car.setScale(dir, 1);
+    const o = { phase: 'arrive', cops: [] };
+    SFX.siren();
+    o.update = (s, t) => {
+      lr.setAlpha(Math.floor(t / 120) % 2 ? 1 : 0.2); lb.setAlpha(Math.floor(t / 120) % 2 ? 0.2 : 1);
+      if (o.phase === 'arrive') {
+        const stopX = this.targetX() - dir * 190; car.x += dir * 420 * s;
+        if (dir > 0 ? car.x >= stopX : car.x <= stopX) { car.x = stopX; o.phase = 'stopped';
+          o.cops = [this.person(car.x - dir * 20, car.y, 0x1d3f8f, 0x11224a), this.person(car.x + dir * 20, car.y, 0x1d3f8f, 0x11224a)];
+          o.cops.forEach(c => { c.setAlpha(0); this.world.add(c); this.tweens.add({ targets: c, alpha: 1, x: c.x + dir * 50, duration: 400 }); });
+          this.arrive(o.defeat, () => { o.cops.forEach(c => this.tweens.add({ targets: c, x: car.x, alpha: 0, duration: 400, onComplete: () => c.destroy() })); this.time.delayedCall(600, () => { o.phase = 'leaving'; }); });
+        }
+      }
+      if (o.phase === 'leaving') { car.x += dir * 480 * s; if (dir > 0 ? car.x > W + 220 : car.x < -220) { o.phase = 'done'; this.threatGone(); } }
+    };
+    o.defeat = (done) => {
+      o.phase = 'arrest';
+      o.cops.forEach(c => this.tweens.add({ targets: c, x: this.chars.x + (c.x < this.chars.x ? -60 : 60), duration: 600 }));
+      this.time.delayedCall(700, () => {
+        this.tweens.add({ targets: [this.chars, ...o.cops], x: car.x + dir * 10, duration: 900, ease: 'Sine.easeInOut', onComplete: () => {
+          this.tweens.add({ targets: [this.chars, ...o.cops], scale: 0.15, alpha: 0, y: car.y - 40, duration: 300, onComplete: () => {
+            SFX.siren(); this.tweens.add({ targets: car, x: dir > 0 ? W + 260 : -260, duration: 1500, ease: 'Sine.easeIn', onComplete: done });
+          }});
+        }});
+      });
+    };
+    return o;
+  }
+
+  ob_drone() {
+    const fromLeft = this.targetX() > W / 2, dir = fromLeft ? 1 : -1;
+    const dr = this.add.container(fromLeft ? -100 : W + 100, 70); this.world.add(dr);
+    const body = this.add.rectangle(0, 0, 60, 22, 0x8c8ca0), face = this.add.rectangle(0, 2, 36, 14, 0xf2c6a0);
+    const wig = this.add.rectangle(-4, -12, 46, 10, 0xf7d94c), wig2 = this.add.rectangle(18, -8, 14, 6, 0xf7d94c), tie = this.add.rectangle(0, 16, 8, 16, 0xe8322e);
+    const arms = [-36, 36].map(x => this.add.rectangle(x, -4, 26, 4, 0x55556a)); const rotors = [-46, 46].map(x => this.add.rectangle(x, -10, 30, 4, 0xd0d0e0));
+    const eyes = [-8, 8].map(x => this.add.rectangle(x, 0, 5, 5, 0x1d3f8f)); const mouth = this.add.rectangle(0, 7, 12, 3, 0xc0392b);
+    dr.add([...arms, body, face, ...eyes, mouth, wig, wig2, tie, ...rotors]);
+    const target = this.add.container(0, 0).setAlpha(0); this.world.add(target);
+    const r1 = this.add.ellipse(0, 0, 150, 40).setStrokeStyle(4, 0xe8322e), r2 = this.add.ellipse(0, 0, 70, 18).setStrokeStyle(4, 0xe8322e); target.add([r1, r2]);
+    const o = { phase: 'fly' };
+    o.update = (s, t) => {
+      rotors.forEach(r => r.scaleX = Math.abs(Math.sin(t / 25)) + 0.2);
+      dr.y = 70 + Math.sin(t / 300) * 10;
+      if (o.phase === 'fly') { dr.x += dir * 300 * s; if (Math.abs(dr.x - this.targetX()) < 10) { o.phase = 'hover'; target.setPosition(this.targetX(), this.groundY() - 6).setAlpha(1); SFX.alarm(); this.arrive(o.defeat, () => { target.setAlpha(0); this.time.delayedCall(400, () => { o.phase = 'leave'; }); }); } }
+      if (o.phase === 'hover') r1.setScale(1 + Math.sin(t / 90) * 0.1);
+      if (o.phase === 'leave') { dr.x += dir * 420 * s; if (dir > 0 ? dr.x > W + 120 : dr.x < -120) { o.phase = 'done'; this.threatGone(); } }
+    };
+    o.defeat = (done) => {
+      o.phase = 'drop';
+      const bomb = this.add.container(dr.x, dr.y + 20, [this.add.circle(0, 0, 13, 0x111111), this.add.rectangle(0, -16, 3, 10, 0x7a5a30), this.add.circle(0, -22, 3, 0xffd23c)]); this.world.add(bomb);
+      this.tweens.add({ targets: bomb, y: this.home.y - 20, duration: 700, ease: 'Quad.easeIn', onComplete: () => {
+        bomb.destroy(); target.setAlpha(0); SFX.boom(); this.cameras.main.shake(500, 0.03);
+        const cx = this.home.x, cy = this.home.y - 40;
+        [0xffd23c, 0xff8c42, 0xe8322e].forEach((col, i) => { const c = this.add.circle(cx, cy, 10, col); this.fx.add(c); this.tweens.add({ targets: c, radius: 160 - i * 40, alpha: 0, duration: 500, delay: i * 60, onComplete: () => c.destroy() }); });
+        for (let i = 0; i < 12; i++) { const st = txt(this, cx, cy, '*', 20, { color: '#ffd23c' }).setOrigin(0.5); this.fx.add(st); const a = Math.random() * Math.PI * 2; this.tweens.add({ targets: st, x: cx + Math.cos(a) * 200, y: cy + Math.sin(a) * 200, alpha: 0, duration: 800, onComplete: () => st.destroy() }); }
+        this.time.delayedCall(200, () => this.chars.setVisible(false));
+        for (let i = 0; i < 14; i++) { const sm = this.add.rectangle(cx + Phaser.Math.Between(-90, 90), cy + Phaser.Math.Between(-20, 60), Phaser.Math.Between(40, 80), Phaser.Math.Between(40, 80), i % 2 ? 0x8c8ca0 : 0xc8c8d8); this.fx.add(sm); this.tweens.add({ targets: sm, y: sm.y - 160, scale: 2.2, alpha: 0, duration: 2200, delay: 100 + i * 60, ease: 'Sine.easeOut', onComplete: () => sm.destroy() }); }
+        this.tweens.add({ targets: dr, x: dir > 0 ? W + 150 : -150, duration: 1200, delay: 500 });
+        this.time.delayedCall(2400, done);
+      }});
+    };
+    return o;
+  }
+
+  ob_patriota() {
+    const fromLeft = this.targetX() > W / 2, dir = fromLeft ? 1 : -1;
+    const pt = this.add.container(fromLeft ? -80 : W + 80, this.groundY()); this.world.add(pt);
+    const legs = [this.add.rectangle(-5, -8, 8, 18, 0xffd23c), this.add.rectangle(5, -8, 8, 18, 0xffd23c)];
+    const bodyR = this.add.rectangle(0, -28, 24, 24, 0x1e9e48), head = this.add.rectangle(0, -46, 16, 16, 0xd9a877), cap = this.add.rectangle(0, -55, 18, 6, 0x1e9e48);
+    const flag = this.add.container(0, -60); const pole = this.add.rectangle(0, 0, 4, 90, 0x7a5a30).setOrigin(0.5, 0);
+    const cloth = this.add.rectangle(36, 6, 64, 42, 0x1e9e48).setOrigin(0.5, 0), rhomb = this.add.polygon(36, 27, [0, -14, 22, 0, 0, 14, -22, 0], 0xffd23c), globe = this.add.circle(36, 27, 7, 0x1d3f8f);
+    flag.add([pole, cloth, rhomb, globe]); flag.setPosition(dir * 10, -100).setAngle(dir * -40);
+    pt.add([...legs, bodyR, head, cap, flag]);
+    const o = { phase: 'run' };
+    o.update = (s, t) => {
+      legs[0].y = -8 + Math.sin(t / 60) * 4; legs[1].y = -8 - Math.sin(t / 60) * 4; flag.angle = dir * -40 + Math.sin(t / 150) * 12;
+      if (o.phase === 'run') { pt.x += dir * 170 * s; if (Math.abs(pt.x - this.targetX()) < 340) { o.phase = 'charge'; this.arrive(o.defeat, () => { o.phase = 'pass'; }); } }
+      if (o.phase === 'charge') pt.x += dir * 90 * s;
+      if (o.phase === 'pass') { pt.x += dir * 340 * s; if (dir > 0 ? pt.x > W + 100 : pt.x < -100) { o.phase = 'done'; this.threatGone(); } }
+    };
+    o.defeat = (done) => {
+      o.phase = 'hold';
+      this.tweens.add({ targets: pt, x: this.chars.x - dir * 70, duration: 400, onComplete: () => {
+        let hits = 0;
+        const swing = () => {
+          SFX.hit(); hits++;
+          this.tweens.add({ targets: flag, angle: dir * 70, duration: 90, yoyo: true });
+          this.tweens.add({ targets: this.chars, x: this.home.x + dir * 12, angle: dir * 8, duration: 80, yoyo: true });
+          const pow = txt(this, this.chars.x + Phaser.Math.Between(-40, 40), this.chars.y - 120 + Phaser.Math.Between(-30, 30), Phaser.Utils.Array.GetRandom(['POW!', 'PAF!', 'TUM!', 'BAM!']), 18, { color: '#ffd23c' }).setOrigin(0.5).setStroke('#e8322e', 6); this.fx.add(pow);
+          this.tweens.add({ targets: pow, scale: 1.6, alpha: 0, duration: 400, onComplete: () => pow.destroy() });
+          for (let i = 0; i < 4; i++) { const ln = this.add.rectangle(this.chars.x, this.chars.y - 100, 40, 4, 0xfff8ec).setAngle(i * 45 + hits * 20); this.fx.add(ln); this.tweens.add({ targets: ln, scaleX: 2, alpha: 0, duration: 250, onComplete: () => ln.destroy() }); }
+          if (hits < 5) this.time.delayedCall(260, swing); else fall();
+        };
+        const fall = () => {
+          this.tweens.add({ targets: this.chars, angle: -dir * 85, y: this.home.y - 10, x: this.home.x + dir * 40, duration: 450, ease: 'Bounce.easeOut' });
+          const stars = []; for (let i = 0; i < 3; i++) { const st = txt(this, 0, 0, '*', 22, { color: '#ffd23c' }).setOrigin(0.5); this.fx.add(st); stars.push(st); }
+          const ev = this.time.addEvent({ delay: 16, loop: true, callback: () => { stars.forEach((st, i) => { const a = this.time.now / 250 + i * 2.1; st.setPosition(this.chars.x + dir * 70 + Math.cos(a) * 34, this.home.y - 60 + Math.sin(a) * 10); }); } });
+          this.tweens.add({ targets: pt, x: dir > 0 ? W + 120 : -120, duration: 1200, delay: 400 });
+          this.time.delayedCall(2200, () => { ev.remove(); done(); });
+        };
+        swing();
+      }});
+    };
+    return o;
+  }
+}
+
+const game = new Phaser.Game({
+  type: Phaser.AUTO, parent: 'game', width: W, height: H, pixelArt: true, roundPixels: true, backgroundColor: '#0b0a14',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  input: { activePointers: 3 },
+  scene: [Boot, Title, MapScene, Play],
+});
+</script>

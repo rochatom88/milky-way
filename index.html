@@ -9,6 +9,7 @@
   --font-display:"Press Start 2P", "Courier New", monospace;
   color-scheme:dark;
 }
+[hidden]{display:none!important}
 html,body{height:100%;overscroll-behavior:none}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-display);
   padding-block:6px;padding-left:max(10px,env(safe-area-inset-left,0px));padding-right:max(10px,env(safe-area-inset-right,0px));
@@ -27,6 +28,16 @@ body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-displa
 #touch .run.on{background:var(--red);color:var(--milk)}
 #touch .pos.active{background:var(--cyan);color:var(--ink);border-color:var(--cyan)}
 #hint{font-size:7px;line-height:1.8;opacity:.55;text-align:center}
+#names{position:fixed;inset:0;background:rgba(11,10,20,.92);display:flex;align-items:center;justify-content:center;z-index:10;padding:16px}
+#names form{background:var(--panel);border:3px solid var(--fg);padding:22px 20px;display:grid;gap:14px;width:min(100%,420px);box-sizing:border-box}
+#names h2{margin:0;font-size:13px;color:var(--yellow);text-align:center;letter-spacing:1px}
+#names label{display:grid;gap:6px;font-size:8px;color:#a9a4c9}
+#names input{font:inherit;font-size:14px;padding:12px 10px;background:var(--ink);color:var(--fg);border:3px solid var(--line);text-transform:uppercase;min-width:0;width:100%;box-sizing:border-box}
+#names input:focus{outline:none;border-color:var(--cyan)}
+#names .who{display:flex;align-items:center;gap:10px}
+#names .who img{width:32px;height:32px;image-rendering:pixelated;border:2px solid var(--fg)}
+#names button{font:inherit;font-size:11px;padding:14px;background:var(--yellow);color:var(--ink);border:3px solid var(--ink);cursor:pointer;letter-spacing:1px}
+#names button:focus-visible{outline:3px solid var(--cyan)}
 @media (max-width:600px){#hint{display:none}#touch button{min-height:60px;font-size:8px}}
 #rotate{display:none;font-size:8px;color:var(--yellow);letter-spacing:1px}
 @media (orientation:portrait) and (max-width:600px){#rotate{display:block}}
@@ -41,6 +52,14 @@ body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-displa
   <button id="btnPos1" class="pos" aria-label="Posição 1: Mamada">POSIÇÃO 1<small>MAMADA · 10s · 1.000</small></button>
   <button id="btnPos2" class="pos" aria-label="Posição 2: Rapidinha">POSIÇÃO 2<small>RAPIDINHA · 15s · 2.000</small></button>
   <button id="btnRun" class="run" aria-label="Correr">CORRE!<small>SAI DA POSIÇÃO</small></button>
+</div>
+<div id="names" hidden>
+  <form id="namesForm">
+    <h2>QUEM VAI JOGAR?</h2>
+    <label><span class="who"><img src="assets/tom_face.png" alt=""> JOGADOR 1 (DE BIGODE)</span><input id="name1" maxlength="10" autocomplete="off" placeholder="TOM" value="TOM"></label>
+    <label><span class="who"><img src="assets/pete_face.png" alt=""> JOGADOR 2 (DE BONÉ)</span><input id="name2" maxlength="10" autocomplete="off" placeholder="PETE" value="PETE"></label>
+    <button type="submit">JOGAR</button>
+  </form>
 </div>
 <div id="hint">SETAS anda · SHIFT corre · 1 / 2 entra ou sai da posição · Q sai · ESPAÇO pula · P pausa · ESC mapa</div>
 
@@ -90,9 +109,9 @@ const LOCATIONS = [
 ];
 
 // ---------- estado global ----------
-const G = { score: 0, lives: TUNING.lives, loc: 0, unlocked: 1, explosions: {}, muted: false };
-try { const s = JSON.parse(localStorage.getItem('milkyway') || '{}'); if (s.unlocked) G.unlocked = s.unlocked; if (s.best) G.best = s.best; } catch (e) {}
-function persist() { try { localStorage.setItem('milkyway', JSON.stringify({ unlocked: G.unlocked, best: Math.max(G.best || 0, G.score) })); } catch (e) {} }
+const G = { score: 0, lives: TUNING.lives, loc: 0, unlocked: 1, explosions: {}, muted: false, names: { p1: 'TOM', p2: 'PETE' } };
+try { const s = JSON.parse(localStorage.getItem('milkyway') || '{}'); if (s.unlocked) G.unlocked = s.unlocked; if (s.best) G.best = s.best; if (s.names) G.names = s.names; } catch (e) {}
+function persist() { try { localStorage.setItem('milkyway', JSON.stringify({ unlocked: G.unlocked, best: Math.max(G.best || 0, G.score), names: G.names })); } catch (e) {} }
 const TOUCH = { dir: 0, run: false };   // estado dos botões de toque, lido pela cena
 
 // ---------- áudio sintetizado (8-bit) ----------
@@ -184,11 +203,18 @@ class Title extends Phaser.Scene {
     for (let i = 0; i < 28; i++) { const r = this.add.rectangle(Phaser.Math.Between(0, W), Phaser.Math.Between(0, H), 6, 10, 0xfff8ec).setAlpha(0.7); r.vy = Phaser.Math.Between(40, 120); this.drops.add(r); }
     txt(this, W / 2, 150, 'MILKY WAY', 56, { color: '#fff8ec' }).setOrigin(0.5).setStroke('#e8322e', 12);
     txt(this, W / 2, 215, 'QUALQUER LUGAR É LUGAR', 14, { color: '#ffd23c' }).setOrigin(0.5);
-    txt(this, W / 2, 300, 'SÃO PAULO · 16 BITS', 10, { color: '#48d0ff' }).setOrigin(0.5);
-    this.press = txt(this, W / 2, 400, 'TOQUE OU APERTE E PARA COMEÇAR', 12).setOrigin(0.5);
+    txt(this, W / 2, 300, 'SÃO PAULO', 10, { color: '#48d0ff' }).setOrigin(0.5);
+    this.press = txt(this, W / 2, 400, 'TOQUE PARA COMEÇAR', 12).setOrigin(0.5);
     txt(this, W / 2, 470, 'ANDE · ESCOLHA O LUGAR · ENTRE NA POSIÇÃO · SAIA ANTES DE SER PEGO', 7, { color: '#a9a4c9' }).setOrigin(0.5);
     if (G.best) txt(this, W / 2, 505, 'RECORDE ' + G.best.toLocaleString('pt-BR'), 9, { color: '#ffd23c' }).setOrigin(0.5);
-    this.go = () => { SFX.unlock(); SFX.humStart(); SFX.select(); this.scene.start('map'); };
+    this.go = () => {
+      if (this.going) return; this.going = true; SFX.unlock(); SFX.humStart(); SFX.select();
+      const box = document.getElementById('names'), form = document.getElementById('namesForm'), i1 = document.getElementById('name1'), i2 = document.getElementById('name2');
+      i1.value = G.names.p1; i2.value = G.names.p2; box.hidden = false; game.input.keyboard.enabled = false; setTimeout(() => i1.focus(), 50);
+      form.onsubmit = (e) => { e.preventDefault();
+        G.names = { p1: (i1.value.trim() || 'TOM').toUpperCase().slice(0, 10), p2: (i2.value.trim() || 'PETE').toUpperCase().slice(0, 10) };
+        persist(); box.hidden = true; game.input.keyboard.enabled = true; SFX.select(); this.scene.start('map'); };
+    };
     ['keydown-E', 'keydown-ENTER', 'keydown-SPACE'].forEach(k => this.input.keyboard.on(k, this.go));
     this.input.on('pointerdown', this.go);
   }
@@ -284,7 +310,7 @@ class Play extends Phaser.Scene {
     this.hud.add(g);
     this.hud.add(this.add.image(24, 14, 'tom_face').setOrigin(0).setScale(1.1));
     this.hud.add(this.add.image(240, 14, 'pete_face').setOrigin(0).setScale(1.1));
-    this.hud.add(txt(this, 66, 14, 'TOM', 10)); this.hud.add(txt(this, 282, 14, 'PETE', 10));
+    this.hud.add(txt(this, 66, 14, G.names.p1, 10)); this.hud.add(txt(this, 282, 14, G.names.p2, 10));
     this.hearts = this.add.graphics(); this.hud.add(this.hearts);
     this.hud.add(txt(this, W - 24, 12, this.loc.name, 12, { color: '#fff8ec' }).setOrigin(1, 0));
     this.hud.add(txt(this, W - 24, 32, this.loc.sub, 8, { color: '#48d0ff' }).setOrigin(1, 0));
@@ -477,19 +503,15 @@ class Play extends Phaser.Scene {
     this.tweens.add({ targets: pts, alpha: 1, y: 290, delay: 400, duration: 300 });
     G.score += this.posCfg.points; G.explosions[this.loc.id] = (G.explosions[this.loc.id] || 0) + 1;
     const unlocked = G.loc + 1 < LOCATIONS.length && G.unlocked < G.loc + 2;
-    if (unlocked) { G.unlocked = G.loc + 2; this.time.delayedCall(1200, () => { const u = txt(this, W / 2, 350, 'FASE ' + (G.loc + 2) + ' LIBERADA: ' + LOCATIONS[G.loc + 1].name, 11, { color: '#4ad46c' }).setOrigin(0.5); this.fx.add(u); }); }
+    if (unlocked) G.unlocked = G.loc + 2;
+    if (G.loc + 1 < LOCATIONS.length) this.time.delayedCall(1200, () => { const u = txt(this, W / 2, 350, 'PRÓXIMA FASE: ' + LOCATIONS[G.loc + 1].name, 11, { color: '#4ad46c' }).setOrigin(0.5); this.fx.add(u); });
+    else this.time.delayedCall(1200, () => { const u = txt(this, W / 2, 350, 'ÚLTIMA FASE: CONTINUE ACUMULANDO PONTOS', 10, { color: '#4ad46c' }).setOrigin(0.5); this.fx.add(u); });
     persist(); this.refreshHUD();
     this.time.delayedCall(900, () => this.celebrate());
     this.time.delayedCall(3600, () => {
       this.fx.removeAll(true); this.milk[this.pose.id] = 0;
-      if (G.loc + 1 < LOCATIONS.length && (G.explosions[this.loc.id] || 0) >= 1) {
-        const p = panel(this, 200, 190, 560, 150), a = txt(this, W / 2, 225, 'CONTINUAR AQUI', 12, { color: '#f2f0ff' }).setOrigin(0.5), b = txt(this, W / 2, 285, 'PRÓXIMA FASE: ' + LOCATIONS[G.loc + 1].name, 12, { color: '#4ad46c' }).setOrigin(0.5);
-        const ra = this.add.rectangle(W / 2, 225, 540, 44, 0x2a2744).setAlpha(0.01).setInteractive(), rb = this.add.rectangle(W / 2, 285, 540, 44, 0x2a2744).setAlpha(0.01).setInteractive();
-        this.ui.add([p, ra, rb, a, b]); this.state = 'wait';
-        const stay = () => { this.ui.removeAll(true); this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); };
-        const next = () => { SFX.select(); G.loc++; this.scene.restart(); };
-        ra.on('pointerdown', stay); rb.on('pointerdown', next); this.input.keyboard.once('keydown-E', stay); this.input.keyboard.once('keydown-ENTER', next);
-      } else { this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); }
+      if (G.loc + 1 < LOCATIONS.length) { SFX.select(); G.loc++; this.scene.restart(); }
+      else { this.toNeutral(false); this.scheduleObstacle(TUNING.firstObstacle); }
     });
   }
 
